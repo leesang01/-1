@@ -40,20 +40,10 @@ public:
     void enqueue(Process proc) {
         lock_guard<mutex> lock(mtx);
         if (proc.type == 'F') {
-            if (!top->processes.empty()) {
-                top->processes.push_back(proc);
-            }
-            else {
-                top->processes.push_front(proc);
-            }
+            top->processes.push_back(proc);
         }
         else {
-            if (!top->processes.empty()) {
-                top->processes.push_front(proc);
-            }
-            else {
-                top->processes.push_back(proc);
-            }
+            top->processes.push_front(proc);
         }
         split_n_merge();
     }
@@ -102,17 +92,30 @@ public:
     void display() {
         lock_guard<mutex> lock(mtx);
         auto current = top;
+        bool first = true;
         while (current) {
+            if (first) {
+                cout << "P => ";
+                first = false;
+            }
+            else {
+                cout << "      ";
+            }
             cout << "[";
             for (const auto& proc : current->processes) {
                 cout << proc.pid << (proc.type == 'F' ? 'F' : 'B');
                 if (proc.promoted) cout << '*';
                 cout << " ";
             }
-            cout << "] ";
+            if (current->next == nullptr) {
+                cout << "] (top)" << endl;
+            }
+            else {
+                cout << "]" << endl;
+            }
             current = current->next;
         }
-        cout << endl;
+        cout << "(bottom)" << endl;
     }
 };
 
@@ -217,10 +220,10 @@ atomic<int> pidCounter(0);
 
 void shell(Scheduler& scheduler) {
     static vector<string> commands = {
-        "echo abc",
         "dummy",
-        "echo def",
-        "echo ghi"
+        "dummy",
+        "dummy",
+        "dummy"
     };
     for (const auto& command : commands) {
         vector<string> args = parse(command);
