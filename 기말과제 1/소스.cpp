@@ -1,128 +1,258 @@
 #include <iostream>
-#include <thread>
 #include <vector>
-#include <queue>
-#include <string>
+#include <list>
+#include <memory>
 #include <mutex>
 #include <condition_variable>
-#include <fstream>
+#include <atomic>
+#include <thread>
+#include <queue>
 #include <sstream>
-#include <windows.h>
+#include <chrono>
 
 using namespace std;
 
-enum ProcessType { FG, BG };
-
+// Process structure
 struct Process {
     int pid;
-    ProcessType type;
+    char type; // 'F' for Foreground, 'B' for Background
+    int remainingTime;
     bool promoted;
-    int sleep_time;
-    thread::id tid;
+    Process(int id, char t, int time = 0) : pid(id), type(t), remainingTime(time), promoted(false) {}
+};
 
-    bool operator<(const Process& other) const {
-        return sleep_time > other.sleep_time;  // sleep_time이 작은 것이 우선 순위가 높도록 설정
+// Stack Node structure
+struct StackNode {
+    list<Process> processes;
+    shared_ptr<StackNode> next;
+    StackNode() : next(nullptr) {}
+};
+
+class DynamicQueue {
+private:
+    shared_ptr<StackNode> top;
+    mutex mtx;
+    int threshold;
+
+public:
+    DynamicQueue() : top(make_shared<StackNode>()), threshold(5) {} // Adjust threshold as needed
+
+    void enqueue(Process proc) {
+        lock_guard<mutex> lock(mtx);
+        if (proc.type == 'F') {
+            if (!top->processes.empty()) {
+                top->processes.push_back(proc);
+            }
+            else {
+                top->processes.push_front(proc);
+            }
+        }
+        else {
+            if (!top->processes.empty()) {
+                top->processes.push_front(proc);
+            }
+            else {
+                top->processes.push_back(proc);
+            }
+        }
+        split_n_merge();
+    }
+
+    Process dequeue() {
+        lock_guard<mutex> lock(mtx);
+        while (top && top->processes.empty() && top->next) {
+            top = top->next;
+        }
+        if (!top->processes.empty()) {
+            Process proc = top->processes.front();
+            top->processes.pop_front();
+            return proc;
+        }
+        return Process(-1, 'N'); // Indicate an empty process
+    }
+
+    void promote() {
+        lock_guard<mutex> lock(mtx);
+        if (top->next && !top->processes.empty()) {
+            Process proc = top->processes.front();
+            top->processes.pop_front();
+            proc.promoted = true;
+            top->next->processes.push_back(proc);
+            if (top->processes.empty()) {
+                top = top->next;
+            }
+        }
+    }
+
+    void split_n_merge() {
+        auto current = top;
+        while (current) {
+            if (current->processes.size() > threshold) {
+                auto new_node = make_shared<StackNode>();
+                auto it = current->processes.begin();
+                advance(it, current->processes.size() / 2);
+                new_node->processes.splice(new_node->processes.begin(), current->processes, it, current->processes.end());
+                new_node->next = current->next;
+                current->next = new_node;
+            }
+            current = current->next;
+        }
+    }
+
+    void display() {
+        lock_guard<mutex> lock(mtx);
+        auto current = top;
+        while (current) {
+            cout << "[";
+            for (const auto& proc : current->processes) {
+                cout << proc.pid << (proc.type == 'F' ? 'F' : 'B');
+                if (proc.promoted) cout << '*';
+                cout << " ";
+            }
+            cout << "] ";
+            current = current->next;
+        }
+        cout << endl;
     }
 };
 
-mutex dq_mtx, wq_mtx, print_mtx;
-condition_variable cv;
-vector<Process> dynamic_queue;
-priority_queue<Process> wait_queue;
-bool running = true;
-
-void print_status(int interval) {
-    while (running) {
-        this_thread::sleep_for(chrono::seconds(interval));
-
-        lock_guard<mutex> lock(print_mtx);
-        cout << "Running: ";
-        for (const auto& process : dynamic_queue) {
-            cout << "[" << process.pid << (process.type == FG ? "F" : "B") << (process.promoted ? "*" : "") << "]";
-        }
-        cout << endl;
-        cout << "---------------------------" << endl;
-
-        // Print Dynamic Queue
-        cout << "DQ: ";
-        for (const auto& process : dynamic_queue) {
-            cout << process.pid << (process.type == FG ? "F" : "B") << " ";
-        }
-        cout << endl;
-
-        // Print Wait Queue
-        cout << "WQ: ";
-        priority_queue<Process> temp_wq = wait_queue;
-        while (!temp_wq.empty()) {
-            auto p = temp_wq.top();
-            temp_wq.pop();
-            cout << "[" << p.pid << (p.type == FG ? "F" : "B") << ":" << p.sleep_time << "]";
-        }
-        cout << endl;
-        cout << "---------------------------" << endl;
+// Parse function
+vector<string> parse(const string& command) {
+    istringstream iss(command);
+    vector<string> tokens;
+    string token;
+    while (iss >> token) {
+        tokens.push_back(token);
     }
+    return tokens;
 }
 
-void exec_process(Process process) {
-    this_thread::sleep_for(chrono::seconds(process.sleep_time));
-    {
-        lock_guard<mutex> lock(print_mtx);
-        cout << "Process " << process.pid << (process.type == FG ? "F" : "B") << " finished." << endl;
-    }
-}
+// Execute function
+void exec(const vector<string>& args) {
+    if (args.empty()) return;
 
-void shell_process(int interval, const string& command_file) {
-    ifstream file(command_file);
-    string line;
-    int pid_counter = 0;
-
-    while (running && getline(file, line)) {
-        istringstream iss(line);
-        string command;
-        iss >> command;
-
-        if (command == "echo") {
-            string arg;
-            iss >> arg;
-
-            Process process = { pid_counter++, FG, false, interval };
-            process.tid = this_thread::get_id();
-            dynamic_queue.push_back(process);
-
-            thread t(exec_process, process);
-            t.detach();
+    // Example commands (you can expand these)
+    if (args[0] == "echo") {
+        for (size_t i = 1; i < args.size(); ++i) {
+            cout << args[i] << " ";
         }
-        // Implement other commands as needed
-
-        this_thread::sleep_for(chrono::seconds(interval));
+        cout << endl;
     }
+    else if (args[0] == "dummy") {
+        // Do nothing
+    } // Add more commands as needed
 }
 
-void monitor_process(int interval) {
-    while (running) {
-        this_thread::sleep_for(chrono::seconds(interval));
+class Scheduler {
+private:
+    DynamicQueue dq;
+    queue<Process> waitQueue;
+    mutex mtx;
+    condition_variable cv;
+    atomic<bool> running;
+    bool newCommand;
 
-        {
-            lock_guard<mutex> lock(dq_mtx);
-            if (!dynamic_queue.empty()) {
-                auto process = dynamic_queue.front();
-                dynamic_queue.erase(dynamic_queue.begin());
+public:
+    Scheduler() : running(true), newCommand(false) {}
 
-                lock_guard<mutex> wait_lock(wq_mtx);
-                wait_queue.push(process);
+    void enqueue(Process proc) {
+        dq.enqueue(proc);
+        notify();
+    }
+
+    Process dequeue() {
+        return dq.dequeue();
+    }
+
+    void promote() {
+        dq.promote();
+        notify();
+    }
+
+    void run() {
+        while (running || newCommand) {
+            unique_lock<mutex> lock(mtx);
+            cv.wait(lock, [this] { return newCommand || !running; });
+
+            if (!running && !newCommand) break;
+
+            cout << "Running: [1B]" << endl;
+            cout << "---------------------------" << endl;
+            cout << "DQ: ";
+            dq.display();
+            cout << "---------------------------" << endl;
+            cout << "WQ: ";
+            queue<Process> tempWQ = waitQueue;
+            while (!tempWQ.empty()) {
+                Process proc = tempWQ.front();
+                tempWQ.pop();
+                cout << "[" << proc.pid << (proc.type == 'F' ? 'F' : 'B') << ":" << proc.remainingTime << "] ";
             }
-        }
+            cout << endl;
 
+            newCommand = false; // Reset flag
+        }
+    }
+
+    void stop() {
+        running = false;
+        notify();
+    }
+
+    void notify() {
+        {
+            lock_guard<mutex> lock(mtx);
+            newCommand = true;
+        }
         cv.notify_all();
     }
+
+    void addWaitQueue(Process proc) {
+        lock_guard<mutex> lock(mtx);
+        waitQueue.push(proc);
+    }
+};
+
+atomic<int> pidCounter(0);
+
+void shell(Scheduler& scheduler) {
+    static vector<string> commands = {
+        "echo abc",
+        "dummy",
+        "echo def",
+        "echo ghi"
+    };
+    for (const auto& command : commands) {
+        vector<string> args = parse(command);
+        exec(args);
+
+        // Simulate adding a process to the queue
+        scheduler.enqueue(Process(pidCounter++, 'F'));
+
+        // Simulate sleep
+        this_thread::sleep_for(chrono::seconds(1));
+    }
+    scheduler.stop(); // Signal to stop the scheduler
 }
 
 int main() {
-    thread monitor(print_status, 2);
-    thread shell(shell_process, 5, "commands.txt");
+    Scheduler scheduler;
 
-    monitor.join();
-    shell.join();
+    // Initialize dynamic queue with the first shell and monitor process
+    scheduler.enqueue(Process(pidCounter++, 'F')); // Shell process
+    scheduler.enqueue(Process(pidCounter++, 'B')); // Monitor process
+
+    // Create shell and scheduler threads
+    thread schedulerThread(&Scheduler::run, &scheduler);
+    thread shellThread(shell, ref(scheduler));
+
+    // Add some processes to the wait queue to demonstrate WQ output
+    scheduler.addWaitQueue(Process(pidCounter++, 'F', 5));
+    scheduler.addWaitQueue(Process(pidCounter++, 'B', 3));
+
+    // Wait for shell and scheduler threads to finish
+    shellThread.join();
+    schedulerThread.join();
 
     return 0;
 }
