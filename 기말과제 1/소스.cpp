@@ -1,3 +1,4 @@
+//2-1 x 2-2 o 2-3 x
 #include <iostream>
 #include <vector>
 #include <list>
